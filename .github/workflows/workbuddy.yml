@@ -2,10 +2,9 @@ name: 🌱 WorkBuddy Daily
 
 on:
   schedule:
-    # 北京时间 07:00 / 12:00 / 23:30（GitHub cron 用 UTC，北京时间 = UTC+8）
-    - cron: "0 23 * * *"     # 07:00
-    - cron: "0 4 * * *"      # 12:00
-    - cron: "30 15 * * *"    # 23:30
+    - cron: "0 23 * * *"     # 北京 07:00
+    - cron: "0 4 * * *"     # 北京 12:00
+    - cron: "30 15 * * *"     # 北京 23:30
   workflow_dispatch:          # 支持手动触发
 
 permissions:
@@ -24,6 +23,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # hardened-by-deployer:checkout: 回写令牌状态时需要完整历史来合并
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -37,10 +38,12 @@ jobs:
         env:
           WORKBUDDY_REFRESH_TOKEN: ${{ secrets.WORKBUDDY_REFRESH_TOKEN }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          BARK_URL: ${{ secrets.BARK_URL }}
         run: python workbuddy_daily.py
 
       # ⚠️ 仅在【私有仓库】中持久化令牌状态；公开仓库会跳过，避免 RT 泄露
       - name: Persist token state (private repo only)
+        # hardened-by-deployer:persist: 推送被拒时自动同步远端并重试，避免"已轮换的令牌丢失"
         if: always() && github.event.repository.private == true
         run: |
           git config user.name  "github-actions[bot]"
@@ -48,7 +51,18 @@ jobs:
           git add -f wb_refresh_tokens.json 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "令牌状态无变化"
-          else
-            git commit -m "chore: 更新令牌状态 [skip ci]"
-            git push
+            exit 0
           fi
+          git commit -m "chore: 更新令牌状态 [skip ci]"
+          for i in 1 2 3 4 5; do
+            if git push; then
+              echo "✅ 令牌状态已推送"
+              exit 0
+            fi
+            echo "第 $i 次推送被拒，同步远端后重试..."
+            git fetch --unshallow origin main 2>/dev/null || git fetch origin main
+            git merge -X ours --no-edit -m "chore: 合并远端令牌状态 [skip ci]" origin/main || true
+            sleep 5
+          done
+          echo "::error::令牌状态推送失败 —— 本次轮换的 refreshToken 未持久化，请检查分支保护规则，或本地执行 deploy.py --force-secret 重置"
+          exit 1

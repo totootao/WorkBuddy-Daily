@@ -2454,12 +2454,15 @@ def send_notify(title, content):
     return False
 
 
+# hardened-by-deployer:notify-stdout
 def send_notify_all(title, content):
     """推送通知到所有已配置的渠道（PushPlus + Bark）。"""
     r1 = send_notify(title, content)
     r2 = _bark_notify(title, content)
+    if not (r1 or r2):
+        # 没有任何推送渠道可用时，把报告打到 stdout，方便在 CI 日志里直接看
+        print("\n" + content)
     return r1 or r2
-
 
 def main():
     if "--refresh" in sys.argv:
